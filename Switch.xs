@@ -4,14 +4,46 @@
 #include "perl.h"
 #include "XSUB.h"
 
-#define CASE_OP(NAME,name)  \
-	    case OP_##NAME: \
-		PL_op = Perl_pp_##name(aTHX); break
+/* Note that Switch can only be faster if we remove the op_ppaddr
+   field from OP* in op.h, and export all the pp functions. - rurban */
+
+/* for computed GOTO's we compress the jump table to the special cases only */
+#ifdef CGOTO
+#define L(op) L_##op
+#define SWITCH_START(OP) if (jmptbl[OP->op_type]) \
+    goto *jmptbl[OP->op_type];                    \
+  else                                            \
+    PL_op =(*OP->op_ppaddr)(aTHX); goto L_end;
+#define CASE(op, block)    L_##op: { block; } goto L_end;
+#define CASE_EMPTY(NAME)   L_##NAME:
+#define CASE_DEF(NAME,name)
+#define SWITCH_END         L_end: ;
+#else
+#define SWITCH_START(OP) switch (OP->op_type) {
+#define CASE(op, block)     case OP_##op: block; break;
+#define CASE_EMPTY(NAME)    case OP_##NAME:
+#define CASE_DEF(NAME,name) case OP_##NAME: PL_op = Perl_pp_##name(aTHX); break;
+#define SWITCH_END       }
+#endif
 
 int runops_switch(pTHX)
 {
     DEBUG_l(Perl_deb(aTHX_ "Entering new RUNOPS level (Runops::Switch)\n"));
+
+#ifdef CGOTO
+    /* we either jump to the label for special inlined parts, or call the pp directly */
+#define NUMOPS OP_max /* sizeof(PL_ppaddr) / sizeof(PL_ppaddr[0]) */
+    static void *jmptbl[NUMOPS] = {
+      &&L_NULL, &&L(SCALAR), &&L(SCOPE), &&L(LINESEQ), &&L(REGCMAYBE), &&L(STUB),
+      &&L(PUSHMARK), &&L(CONST), &&L(GV), &&L(STRINGIFY), &&L(AND), &&L(OR),
+      &&L(COND_EXPR), &&L(NEXTSTATE), &&L(UNSTACK)
+    };
+#endif
+
     do {
+#if PERL_VERSION < 13
+      PERL_ASYNC_CHECK();
+#endif
       if (PL_debug) {
 	if (PL_watchaddr && (*PL_watchaddr != PL_watchok))
 	  PerlIO_printf(Perl_debug_log,
@@ -30,898 +62,552 @@ int runops_switch(pTHX)
 #endif
       }
 
-      switch (PL_op->op_type) {
-	    case OP_NULL:
-	    case OP_SCALAR:
-	    case OP_SCOPE:
-	    case OP_LINESEQ:
-	    case OP_REGCMAYBE:
-		PL_op = NORMAL; break;
-	    case OP_STUB:
-		{
-		    dSP;
-		    if (GIMME_V == G_SCALAR)
-			XPUSHs(&PL_sv_undef);
-		    PUTBACK;
-		    PL_op = NORMAL;
-		}
-		break;
-	    case OP_PUSHMARK:
-		PUSHMARK(PL_stack_sp);
-		PL_op = NORMAL;
-		break;
-	    case OP_WANTARRAY:
-		PL_op = Perl_pp_wantarray(aTHX); break;
-	    case OP_CONST:
-		{ dSP; XPUSHs(cSVOP_sv); PUTBACK; PL_op = NORMAL; }
-		break;
-	    case OP_GVSV:
-		PL_op = Perl_pp_gvsv(aTHX); break;
-	    case OP_GV:
-		{
-		    dSP;
-		    XPUSHs((SV*)cGVOP_gv);
-		    PUTBACK;
-		    PL_op = NORMAL;
-		}
-		break;
-	    case OP_GELEM:
-		PL_op = Perl_pp_gelem(aTHX); break;
-	    case OP_PADSV:
-		PL_op = Perl_pp_padsv(aTHX); break;
-	    case OP_PADAV:
-		PL_op = Perl_pp_padav(aTHX); break;
-	    case OP_PADHV:
-		PL_op = Perl_pp_padhv(aTHX); break;
-	    case OP_PADANY:
-		PL_op = Perl_pp_padany(aTHX); break;
-	    case OP_PUSHRE:
-		PL_op = Perl_pp_pushre(aTHX); break;
-	    case OP_RV2GV:
-		PL_op = Perl_pp_rv2gv(aTHX); break;
-	    case OP_RV2SV:
-		PL_op = Perl_pp_rv2sv(aTHX); break;
-	    case OP_AV2ARYLEN:
-		PL_op = Perl_pp_av2arylen(aTHX); break;
-	    case OP_RV2CV:
-		PL_op = Perl_pp_rv2cv(aTHX); break;
-	    case OP_ANONCODE:
-		PL_op = Perl_pp_anoncode(aTHX); break;
-	    case OP_PROTOTYPE:
-		PL_op = Perl_pp_prototype(aTHX); break;
-	    case OP_REFGEN:
-		PL_op = Perl_pp_refgen(aTHX); break;
-	    case OP_SREFGEN:
-		PL_op = Perl_pp_srefgen(aTHX); break;
-	    case OP_REF:
-		PL_op = Perl_pp_ref(aTHX); break;
-	    case OP_BLESS:
-		PL_op = Perl_pp_bless(aTHX); break;
-	    case OP_BACKTICK:
-		PL_op = Perl_pp_backtick(aTHX); break;
-	    case OP_GLOB:
-		PL_op = Perl_pp_glob(aTHX); break;
-	    case OP_READLINE:
-		PL_op = Perl_pp_readline(aTHX); break;
-	    case OP_RCATLINE:
-		PL_op = Perl_pp_rcatline(aTHX); break;
-	    case OP_REGCRESET:
-		PL_op = Perl_pp_regcreset(aTHX); break;
-	    case OP_REGCOMP:
-		PL_op = Perl_pp_regcomp(aTHX); break;
-	    case OP_MATCH:
-		PL_op = Perl_pp_match(aTHX); break;
-	    case OP_QR:
-		PL_op = Perl_pp_qr(aTHX); break;
-	    case OP_SUBST:
-		PL_op = Perl_pp_subst(aTHX); break;
-	    case OP_SUBSTCONT:
-		PL_op = Perl_pp_substcont(aTHX); break;
-	    case OP_TRANS:
-		PL_op = Perl_pp_trans(aTHX); break;
-	    case OP_SASSIGN:
-		PL_op = Perl_pp_sassign(aTHX); break;
-	    case OP_AASSIGN:
-		PL_op = Perl_pp_aassign(aTHX); break;
-	    case OP_CHOP:
-		PL_op = Perl_pp_chop(aTHX); break;
-	    case OP_SCHOP:
-		PL_op = Perl_pp_schop(aTHX); break;
-	    case OP_CHOMP:
-		PL_op = Perl_pp_chomp(aTHX); break;
-	    case OP_SCHOMP:
-		PL_op = Perl_pp_schomp(aTHX); break;
-	    case OP_DEFINED:
-		PL_op = Perl_pp_defined(aTHX); break;
-	    case OP_UNDEF:
-		PL_op = Perl_pp_undef(aTHX); break;
-	    case OP_STUDY:
-		PL_op = Perl_pp_study(aTHX); break;
-	    case OP_POS:
-		PL_op = Perl_pp_pos(aTHX); break;
-	    case OP_PREINC:
-		PL_op = Perl_pp_preinc(aTHX); break;
-	    case OP_I_PREINC:
-		PL_op = Perl_pp_i_preinc(aTHX); break;
-	    case OP_PREDEC:
-		PL_op = Perl_pp_predec(aTHX); break;
-	    case OP_I_PREDEC:
-		PL_op = Perl_pp_i_predec(aTHX); break;
-	    case OP_POSTINC:
-		PL_op = Perl_pp_postinc(aTHX); break;
-	    case OP_I_POSTINC:
-		PL_op = Perl_pp_i_postinc(aTHX); break;
-	    case OP_POSTDEC:
-		PL_op = Perl_pp_postdec(aTHX); break;
-	    case OP_I_POSTDEC:
-		PL_op = Perl_pp_i_postdec(aTHX); break;
-	    case OP_POW:
-		PL_op = Perl_pp_pow(aTHX); break;
-	    case OP_MULTIPLY:
-		PL_op = Perl_pp_multiply(aTHX); break;
-	    case OP_I_MULTIPLY:
-		PL_op = Perl_pp_i_multiply(aTHX); break;
-	    case OP_DIVIDE:
-		PL_op = Perl_pp_divide(aTHX); break;
-	    case OP_I_DIVIDE:
-		PL_op = Perl_pp_i_divide(aTHX); break;
-	    case OP_MODULO:
-		PL_op = Perl_pp_modulo(aTHX); break;
-	    case OP_I_MODULO:
-		PL_op = Perl_pp_i_modulo(aTHX); break;
-	    case OP_REPEAT:
-		PL_op = Perl_pp_repeat(aTHX); break;
-	    case OP_ADD:
-		PL_op = Perl_pp_add(aTHX); break;
-	    case OP_I_ADD:
-		PL_op = Perl_pp_i_add(aTHX); break;
-	    case OP_SUBTRACT:
-		PL_op = Perl_pp_subtract(aTHX); break;
-	    case OP_I_SUBTRACT:
-		PL_op = Perl_pp_i_subtract(aTHX); break;
-	    case OP_CONCAT:
-		PL_op = Perl_pp_concat(aTHX); break;
-	    case OP_STRINGIFY:
-		{
-		    dSP; dTARGET;
-		    sv_copypv(TARG,TOPs);
-		    SETTARG;
-		    PUTBACK;
-		    PL_op = NORMAL;
-		}
-		break;
-	    case OP_LEFT_SHIFT:
-		PL_op = Perl_pp_left_shift(aTHX); break;
-	    case OP_RIGHT_SHIFT:
-		PL_op = Perl_pp_right_shift(aTHX); break;
-	    case OP_LT:
-		PL_op = Perl_pp_lt(aTHX); break;
-	    case OP_I_LT:
-		PL_op = Perl_pp_i_lt(aTHX); break;
-	    case OP_GT:
-		PL_op = Perl_pp_gt(aTHX); break;
-	    case OP_I_GT:
-		PL_op = Perl_pp_i_gt(aTHX); break;
-	    case OP_LE:
-		PL_op = Perl_pp_le(aTHX); break;
-	    case OP_I_LE:
-		PL_op = Perl_pp_i_le(aTHX); break;
-	    case OP_GE:
-		PL_op = Perl_pp_ge(aTHX); break;
-	    case OP_I_GE:
-		PL_op = Perl_pp_i_ge(aTHX); break;
-	    case OP_EQ:
-		PL_op = Perl_pp_eq(aTHX); break;
-	    case OP_I_EQ:
-		PL_op = Perl_pp_i_eq(aTHX); break;
-	    case OP_NE:
-		PL_op = Perl_pp_ne(aTHX); break;
-	    case OP_I_NE:
-		PL_op = Perl_pp_i_ne(aTHX); break;
-	    case OP_NCMP:
-		PL_op = Perl_pp_ncmp(aTHX); break;
-	    case OP_I_NCMP:
-		PL_op = Perl_pp_i_ncmp(aTHX); break;
-	    case OP_SLT:
-		PL_op = Perl_pp_slt(aTHX); break;
-	    case OP_SGT:
-		PL_op = Perl_pp_sgt(aTHX); break;
-	    case OP_SLE:
-		PL_op = Perl_pp_sle(aTHX); break;
-	    case OP_SGE:
-		PL_op = Perl_pp_sge(aTHX); break;
-	    case OP_SEQ:
-		PL_op = Perl_pp_seq(aTHX); break;
-	    case OP_SNE:
-		PL_op = Perl_pp_sne(aTHX); break;
-	    case OP_SCMP:
-		PL_op = Perl_pp_scmp(aTHX); break;
-	    case OP_BIT_AND:
-		PL_op = Perl_pp_bit_and(aTHX); break;
-	    case OP_BIT_XOR:
-		PL_op = Perl_pp_bit_xor(aTHX); break;
-	    case OP_BIT_OR:
-		PL_op = Perl_pp_bit_or(aTHX); break;
-	    case OP_NEGATE:
-		PL_op = Perl_pp_negate(aTHX); break;
-	    case OP_I_NEGATE:
-		PL_op = Perl_pp_i_negate(aTHX); break;
-	    case OP_NOT:
-		PL_op = Perl_pp_not(aTHX); break;
-	    case OP_COMPLEMENT:
-		PL_op = Perl_pp_complement(aTHX); break;
-	    case OP_ATAN2:
-		PL_op = Perl_pp_atan2(aTHX); break;
-	    case OP_SIN:
-		PL_op = Perl_pp_sin(aTHX); break;
-	    case OP_COS:
-		PL_op = Perl_pp_cos(aTHX); break;
-	    case OP_RAND:
-		PL_op = Perl_pp_rand(aTHX); break;
-	    case OP_SRAND:
-		PL_op = Perl_pp_srand(aTHX); break;
-	    case OP_EXP:
-		PL_op = Perl_pp_exp(aTHX); break;
-	    case OP_LOG:
-		PL_op = Perl_pp_log(aTHX); break;
-	    case OP_SQRT:
-		PL_op = Perl_pp_sqrt(aTHX); break;
-	    case OP_INT:
-		PL_op = Perl_pp_int(aTHX); break;
-	    case OP_HEX:
-		PL_op = Perl_pp_hex(aTHX); break;
-	    case OP_OCT:
-		PL_op = Perl_pp_oct(aTHX); break;
-	    case OP_ABS:
-		PL_op = Perl_pp_abs(aTHX); break;
-	    case OP_LENGTH:
-		PL_op = Perl_pp_length(aTHX); break;
-	    case OP_SUBSTR:
-		PL_op = Perl_pp_substr(aTHX); break;
-	    case OP_VEC:
-		PL_op = Perl_pp_vec(aTHX); break;
-	    case OP_INDEX:
-		PL_op = Perl_pp_index(aTHX); break;
-	    case OP_RINDEX:
-		PL_op = Perl_pp_rindex(aTHX); break;
-	    case OP_SPRINTF:
-		PL_op = Perl_pp_sprintf(aTHX); break;
-	    case OP_FORMLINE:
-		PL_op = Perl_pp_formline(aTHX); break;
-	    case OP_ORD:
-		PL_op = Perl_pp_ord(aTHX); break;
-	    case OP_CHR:
-		PL_op = Perl_pp_chr(aTHX); break;
-	    case OP_CRYPT:
-		PL_op = Perl_pp_crypt(aTHX); break;
-	    case OP_UCFIRST:
-		PL_op = Perl_pp_ucfirst(aTHX); break;
-	    case OP_LCFIRST:
-		PL_op = Perl_pp_lcfirst(aTHX); break;
-	    case OP_UC:
-		PL_op = Perl_pp_uc(aTHX); break;
-	    case OP_LC:
-		PL_op = Perl_pp_lc(aTHX); break;
-	    case OP_QUOTEMETA:
-		PL_op = Perl_pp_quotemeta(aTHX); break;
-	    case OP_RV2AV:
-		PL_op = Perl_pp_rv2av(aTHX); break;
-#if PERL_VERSION >= 15
-	    case OP_AELEMFAST_LEX:
-#endif
-	    case OP_AELEMFAST:
-		PL_op = Perl_pp_aelemfast(aTHX); break;
-	    case OP_AELEM:
-		PL_op = Perl_pp_aelem(aTHX); break;
-	    case OP_ASLICE:
-		PL_op = Perl_pp_aslice(aTHX); break;
-	    case OP_EACH:
-		PL_op = Perl_pp_each(aTHX); break;
-	    case OP_VALUES:
-		PL_op = Perl_pp_values(aTHX); break;
-	    case OP_KEYS:
-		PL_op = Perl_pp_keys(aTHX); break;
-	    case OP_DELETE:
-		PL_op = Perl_pp_delete(aTHX); break;
-	    case OP_EXISTS:
-		PL_op = Perl_pp_exists(aTHX); break;
-	    case OP_RV2HV:
-		PL_op = Perl_pp_rv2hv(aTHX); break;
-	    case OP_HELEM:
-		PL_op = Perl_pp_helem(aTHX); break;
-	    case OP_HSLICE:
-		PL_op = Perl_pp_hslice(aTHX); break;
-	    case OP_UNPACK:
-		PL_op = Perl_pp_unpack(aTHX); break;
-	    case OP_PACK:
-		PL_op = Perl_pp_pack(aTHX); break;
-	    case OP_SPLIT:
-		PL_op = Perl_pp_split(aTHX); break;
-	    case OP_JOIN:
-		PL_op = Perl_pp_join(aTHX); break;
-	    case OP_LIST:
-		PL_op = Perl_pp_list(aTHX); break;
-	    case OP_LSLICE:
-		PL_op = Perl_pp_lslice(aTHX); break;
-	    case OP_ANONLIST:
-		PL_op = Perl_pp_anonlist(aTHX); break;
-	    case OP_ANONHASH:
-		PL_op = Perl_pp_anonhash(aTHX); break;
-	    case OP_SPLICE:
-		PL_op = Perl_pp_splice(aTHX); break;
-	    case OP_PUSH:
-		PL_op = Perl_pp_push(aTHX); break;
-	    case OP_POP:
-		PL_op = Perl_pp_pop(aTHX); break;
-	    case OP_SHIFT:
-		PL_op = Perl_pp_shift(aTHX); break;
-	    case OP_UNSHIFT:
-		PL_op = Perl_pp_unshift(aTHX); break;
-	    case OP_SORT:
-		PL_op = Perl_pp_sort(aTHX); break;
-	    case OP_REVERSE:
-		PL_op = Perl_pp_reverse(aTHX); break;
-	    case OP_GREPSTART:
-	    case OP_MAPSTART: /* pp_mapstart isn't used */
-		PL_op = Perl_pp_grepstart(aTHX); break;
-	    case OP_GREPWHILE:
-		PL_op = Perl_pp_grepwhile(aTHX); break;
-	    case OP_MAPWHILE:
-		PL_op = Perl_pp_mapwhile(aTHX); break;
-	    case OP_RANGE:
-		PL_op = Perl_pp_range(aTHX); break;
-	    case OP_FLIP:
-		PL_op = Perl_pp_flip(aTHX); break;
-	    case OP_FLOP:
-		PL_op = Perl_pp_flop(aTHX); break;
-	    case OP_AND:
-		{
-		    dSP;
-#if PERL_VERSION < 13
-		    PERL_ASYNC_CHECK();
-#endif
-		    if (!SvTRUE(TOPs)) {
-			PUTBACK;
-			PL_op = NORMAL;
-		    }
-		    else {
-			--SP;
-			PUTBACK;
-			PL_op = cLOGOP->op_other;
-		    }
-		}
-		break;
-	    case OP_OR:
-		{
-		    dSP;
-#if PERL_VERSION < 13
-		    PERL_ASYNC_CHECK();
-#endif
-		    if (SvTRUE(TOPs)) {
-		        PUTBACK;
-			PL_op = NORMAL;
-		    }
-		    else {
-			--SP;
-		        PUTBACK;
-			PL_op = cLOGOP->op_other;
-		    }
-		}
-		break;
-	    case OP_XOR:
-		PL_op = Perl_pp_xor(aTHX); break;
-	    case OP_COND_EXPR:
-		{
-		    dSP;
-#if PERL_VERSION < 13
-		    PERL_ASYNC_CHECK();
-#endif
-		    if (SvTRUEx(POPs))
-			PUTBACK, PL_op = cLOGOP->op_other;
-		    else
-			PUTBACK, PL_op = cLOGOP->op_next;
-		}
-		break;
-	    case OP_ANDASSIGN:
-		PL_op = Perl_pp_andassign(aTHX); break;
-	    case OP_ORASSIGN:
-		PL_op = Perl_pp_orassign(aTHX); break;
-	    case OP_METHOD:
-		PL_op = Perl_pp_method(aTHX); break;
-	    case OP_ENTERSUB:
-		PL_op = Perl_pp_entersub(aTHX); break;
-	    case OP_LEAVESUB:
-		PL_op = Perl_pp_leavesub(aTHX); break;
-	    case OP_LEAVESUBLV:
-		PL_op = Perl_pp_leavesublv(aTHX); break;
-	    case OP_CALLER:
-		PL_op = Perl_pp_caller(aTHX); break;
-	    case OP_WARN:
-		PL_op = Perl_pp_warn(aTHX); break;
-	    case OP_DIE:
-		PL_op = Perl_pp_die(aTHX); break;
-	    case OP_RESET:
-		PL_op = Perl_pp_reset(aTHX); break;
-	    case OP_NEXTSTATE:
-		PL_curcop = (COP*)PL_op;
-#if PERL_VERSION < 13
-		PERL_ASYNC_CHECK();
-#endif
-		TAINT_NOT;		/* Each statement is presumed innocent */
-		PL_stack_sp = PL_stack_base + cxstack[cxstack_ix].blk_oldsp;
-		FREETMPS;
-		PL_op = NORMAL;
-		break;
-	    case OP_DBSTATE:
-		PL_op = Perl_pp_dbstate(aTHX); break;
-	    case OP_UNSTACK:
-		{
-		    I32 oldsave;
-#if PERL_VERSION < 13
-		    PERL_ASYNC_CHECK();
-#endif
-		    TAINT_NOT;		/* Each statement is presumed innocent */
-		    PL_stack_sp = PL_stack_base + cxstack[cxstack_ix].blk_oldsp;
-		    FREETMPS;
+    SWITCH_START(PL_op)
+      CASE(NULL,   PL_op = NORMAL )
+      CASE(SCALAR, PL_op = NORMAL )
+      CASE(SCOPE,   PL_op = NORMAL )
+      CASE(LINESEQ, PL_op = NORMAL)
+      CASE(REGCMAYBE, PL_op = NORMAL )
+      CASE(STUB,
+           {
+             dSP;
+             if (GIMME_V == G_SCALAR)
+               XPUSHs(&PL_sv_undef);
+             PUTBACK;
+             PL_op = NORMAL;
+           })
+      CASE(PUSHMARK,
+           PUSHMARK(PL_stack_sp);
+           PL_op = NORMAL)
+      CASE(CONST,
+           {
+             dSP; XPUSHs(cSVOP_sv); PUTBACK; PL_op = NORMAL;
+           })
+      CASE(GV,
+           {
+             dSP;
+             XPUSHs((SV*)cGVOP_gv);
+             PUTBACK;
+             PL_op = NORMAL;
+           })
+      CASE(STRINGIFY,
+           {
+             dSP; dTARGET;
+             sv_copypv(TARG,TOPs);
+             SETTARG;
+             PUTBACK;
+             PL_op = NORMAL;
+           })
+      CASE(AND,
+           {
+             dSP;
+             if (!SvTRUE(TOPs)) {
+               PUTBACK;
+               PL_op = NORMAL;
+             }
+             else {
+               --SP;
+               PUTBACK;
+               PL_op = cLOGOP->op_other;
+             }
+           })
+      CASE(OR,
+           {
+             dSP;
+             if (SvTRUE(TOPs)) {
+               PUTBACK;
+               PL_op = NORMAL;
+             }
+             else {
+               --SP;
+               PUTBACK;
+               PL_op = cLOGOP->op_other;
+             }
+           })
+      CASE(COND_EXPR,
+           {
+             dSP;
+             if (SvTRUE(POPs)) {
+               PUTBACK; PL_op = cLOGOP->op_other;
+             } else {
+               PUTBACK; PL_op = cLOGOP->op_next;
+             }
+           })
+      CASE(NEXTSTATE,
+           {
+             PL_curcop = (COP*)PL_op;
+             TAINT_NOT;		/* Each statement is presumed innocent */
+             PL_stack_sp = PL_stack_base + cxstack[cxstack_ix].blk_oldsp;
+             FREETMPS;
+             PL_op = NORMAL;
+           })
 #if PERL_VERSION >= 13
-		    if (!(PL_op->op_flags & OPf_SPECIAL)) {
-		        oldsave = PL_scopestack[PL_scopestack_ix - 1];
-		        LEAVE_SCOPE(oldsave);
-		    }
+      CASE(UNSTACK,
+           {
+             I32 oldsave;
+             TAINT_NOT;		/* Each statement is presumed innocent */
+             PL_stack_sp = PL_stack_base + cxstack[cxstack_ix].blk_oldsp;
+             FREETMPS;
+             if (!(PL_op->op_flags & OPf_SPECIAL)) {
+               oldsave = PL_scopestack[PL_scopestack_ix - 1];
+               LEAVE_SCOPE(oldsave);
+             }
+             PL_op = NORMAL;
+           })
 #else
-		    oldsave = PL_scopestack[PL_scopestack_ix - 1];
-		    LEAVE_SCOPE(oldsave);
+      CASE(UNSTACK,
+           {
+             I32 oldsave;
+             TAINT_NOT;		/* Each statement is presumed innocent */
+             PL_stack_sp = PL_stack_base + cxstack[cxstack_ix].blk_oldsp;
+             FREETMPS;
+             if (!(PL_op->op_flags & OPf_SPECIAL)) {
+               oldsave = PL_scopestack[PL_scopestack_ix - 1];
+               LEAVE_SCOPE(oldsave);
+             }
+             oldsave = PL_scopestack[PL_scopestack_ix - 1];
+             LEAVE_SCOPE(oldsave);
+             PL_op = NORMAL;
+           })
 #endif
-		    PL_op = NORMAL;
-		}
-		break;
-	    case OP_ENTER:
-		PL_op = Perl_pp_enter(aTHX); break;
-	    case OP_LEAVE:
-		PL_op = Perl_pp_leave(aTHX); break;
-	    case OP_ENTERITER:
-		PL_op = Perl_pp_enteriter(aTHX); break;
-	    case OP_ITER:
-		PL_op = Perl_pp_iter(aTHX); break;
-	    case OP_ENTERLOOP:
-		PL_op = Perl_pp_enterloop(aTHX); break;
-	    case OP_LEAVELOOP:
-		PL_op = Perl_pp_leaveloop(aTHX); break;
-	    case OP_RETURN:
-		PL_op = Perl_pp_return(aTHX); break;
-	    case OP_LAST:
-		PL_op = Perl_pp_last(aTHX); break;
-	    case OP_NEXT:
-		PL_op = Perl_pp_next(aTHX); break;
-	    case OP_REDO:
-		PL_op = Perl_pp_redo(aTHX); break;
-	    case OP_DUMP:
-		PL_op = Perl_pp_dump(aTHX); break;
-	    case OP_GOTO:
-		PL_op = Perl_pp_goto(aTHX); break;
-	    case OP_EXIT:
-		PL_op = Perl_pp_exit(aTHX); break;
-	    case OP_OPEN:
-		PL_op = Perl_pp_open(aTHX); break;
-	    case OP_CLOSE:
-		PL_op = Perl_pp_close(aTHX); break;
-	    case OP_PIPE_OP:
-		PL_op = Perl_pp_pipe_op(aTHX); break;
-	    case OP_FILENO:
-		PL_op = Perl_pp_fileno(aTHX); break;
-	    case OP_UMASK:
-		PL_op = Perl_pp_umask(aTHX); break;
-	    case OP_BINMODE:
-		PL_op = Perl_pp_binmode(aTHX); break;
-	    case OP_TIE:
-		PL_op = Perl_pp_tie(aTHX); break;
-	    case OP_UNTIE:
-		PL_op = Perl_pp_untie(aTHX); break;
-	    case OP_TIED:
-		PL_op = Perl_pp_tied(aTHX); break;
-	    case OP_DBMOPEN:
-		PL_op = Perl_pp_dbmopen(aTHX); break;
-	    case OP_DBMCLOSE:
-		PL_op = Perl_pp_dbmclose(aTHX); break;
-	    case OP_SSELECT:
-		PL_op = Perl_pp_sselect(aTHX); break;
-	    case OP_SELECT:
-		PL_op = Perl_pp_select(aTHX); break;
-	    case OP_GETC:
-		PL_op = Perl_pp_getc(aTHX); break;
-	    case OP_READ:
-		PL_op = Perl_pp_read(aTHX); break;
-	    case OP_ENTERWRITE:
-		PL_op = Perl_pp_enterwrite(aTHX); break;
-	    case OP_LEAVEWRITE:
-		PL_op = Perl_pp_leavewrite(aTHX); break;
-	    case OP_PRTF:
-		PL_op = Perl_pp_prtf(aTHX); break;
-	    case OP_PRINT:
+
+      /* from here on only regular cases */
+      CASE_DEF(GVSV, gvsv)
+      CASE_DEF(WANTARRAY, wantarray)
+      CASE_DEF(GELEM, gelem)
+      CASE_DEF(PADSV, padsv)
+      CASE_DEF(PADAV, padav)
+      CASE_DEF(PADHV, padhv)
+      CASE_DEF(PADANY, padany)
+      CASE_DEF(PUSHRE, pushre)
+      CASE_DEF(RV2GV, rv2gv)
+      CASE_DEF(RV2SV, rv2sv)
+      CASE_DEF(AV2ARYLEN, av2arylen)
+      CASE_DEF(RV2CV, rv2cv)
+      CASE_DEF(ANONCODE, anoncode)
+      CASE_DEF(PROTOTYPE, prototype)
+      CASE_DEF(REFGEN, refgen)
+      CASE_DEF(SREFGEN, srefgen)
+      CASE_DEF(REF, ref)
+      CASE_DEF(BLESS, bless)
+      CASE_DEF(BACKTICK, backtick)
+      CASE_DEF(GLOB, glob)
+      CASE_DEF(READLINE, readline)
+      CASE_DEF(RCATLINE, rcatline)
+      CASE_DEF(REGCRESET, regcreset)
+      CASE_DEF(REGCOMP, regcomp)
+      CASE_DEF(MATCH, match)
+      CASE_DEF(QR, qr)
+      CASE_DEF(SUBST, subst)
+      CASE_DEF(SUBSTCONT, substcont)
+      CASE_DEF(TRANS, trans)
+      CASE_DEF(SASSIGN, sassign)
+      CASE_DEF(AASSIGN, aassign)
+      CASE_DEF(CHOP, chop)
+      CASE_DEF(SCHOP, schop)
+      CASE_DEF(CHOMP, chomp)
+      CASE_DEF(SCHOMP, schomp)
+      CASE_DEF(DEFINED, defined)
+      CASE_DEF(UNDEF, undef)
+      CASE_DEF(STUDY, study)
+      CASE_DEF(POS, pos)
+      CASE_DEF(PREINC, preinc)
+      CASE_DEF(I_PREINC, i_preinc)
+      CASE_DEF(PREDEC, predec)
+      CASE_DEF(I_PREDEC, i_predec)
+      CASE_DEF(POSTINC, postinc)
+      CASE_DEF(I_POSTINC, i_postinc)
+      CASE_DEF(POSTDEC, postdec)
+      CASE_DEF(I_POSTDEC, i_postdec)
+      CASE_DEF(POW, pow)
+      CASE_DEF(MULTIPLY, multiply)
+      CASE_DEF(I_MULTIPLY, i_multiply)
+      CASE_DEF(DIVIDE, divide)
+      CASE_DEF(I_DIVIDE, i_divide)
+      CASE_DEF(MODULO, modulo)
+      CASE_DEF(I_MODULO, i_modulo)
+      CASE_DEF(REPEAT, repeat)
+      CASE_DEF(ADD, add)
+      CASE_DEF(I_ADD, i_add)
+      CASE_DEF(SUBTRACT, subtract)
+      CASE_DEF(I_SUBTRACT, i_subtract)
+      CASE_DEF(CONCAT, concat)
+      CASE_DEF(LEFT_SHIFT, left_shift)
+      CASE_DEF(RIGHT_SHIFT, right_shift)
+      CASE_DEF(LT, lt)
+      CASE_DEF(I_LT, i_lt)
+      CASE_DEF(GT, gt)
+      CASE_DEF(I_GT, i_gt)
+      CASE_DEF(LE, le)
+      CASE_DEF(I_LE, i_le)
+      CASE_DEF(GE, ge)
+      CASE_DEF(I_GE, i_ge)
+      CASE_DEF(EQ, eq)
+      CASE_DEF(I_EQ, i_eq)
+      CASE_DEF(NE, ne)
+      CASE_DEF(I_NE, i_ne)
+      CASE_DEF(NCMP, ncmp)
+      CASE_DEF(I_NCMP, i_ncmp)
+      CASE_DEF(SLT, slt)
+      CASE_DEF(SGT, sgt)
+      CASE_DEF(SLE, sle)
+      CASE_DEF(SGE, sge)
+      CASE_DEF(SEQ, seq)
+      CASE_DEF(SNE, sne)
+      CASE_DEF(SCMP, scmp)
+      CASE_DEF(BIT_AND, bit_and)
+      CASE_DEF(BIT_XOR, bit_xor)
+      CASE_DEF(BIT_OR, bit_or)
+      CASE_DEF(NEGATE, negate)
+      CASE_DEF(I_NEGATE, i_negate)
+      CASE_DEF(NOT, not)
+      CASE_DEF(COMPLEMENT, complement)
+      CASE_DEF(ATAN2, atan2)
+      CASE_DEF(SIN, sin)
+      CASE_DEF(COS, cos)
+      CASE_DEF(RAND, rand)
+      CASE_DEF(SRAND, srand)
+      CASE_DEF(EXP, exp)
+      CASE_DEF(LOG, log)
+      CASE_DEF(SQRT, sqrt)
+      CASE_DEF(INT, int)
+      CASE_DEF(HEX, hex)
+      CASE_DEF(OCT, oct)
+      CASE_DEF(ABS, abs)
+      CASE_DEF(LENGTH, length)
+      CASE_DEF(SUBSTR, substr)
+      CASE_DEF(VEC, vec)
+      CASE_DEF(INDEX, index)
+      CASE_DEF(RINDEX, rindex)
+      CASE_DEF(SPRINTF, sprintf)
+      CASE_DEF(FORMLINE, formline)
+      CASE_DEF(ORD, ord)
+      CASE_DEF(CHR, chr)
+      CASE_DEF(CRYPT, crypt)
+      CASE_DEF(UCFIRST, ucfirst)
+      CASE_DEF(LCFIRST, lcfirst)
+      CASE_DEF(UC, uc)
+      CASE_DEF(LC, lc)
+      CASE_DEF(QUOTEMETA, quotemeta)
+      CASE_DEF(RV2AV, rv2av)
+#if PERL_VERSION >= 15
+      CASE_EMPTY(AELEMFAST_LEX)
+#endif
+      CASE_DEF(AELEMFAST, aelemfast)
+      CASE_DEF(AELEM, aelem)
+      CASE_DEF(ASLICE, aslice)
+      CASE_DEF(EACH, each)
+      CASE_DEF(VALUES, values)
+      CASE_DEF(KEYS, keys)
+      CASE_DEF(DELETE, delete)
+      CASE_DEF(EXISTS, exists)
+      CASE_DEF(RV2HV, rv2hv)
+      CASE_DEF(HELEM, helem)
+      CASE_DEF(HSLICE, hslice)
+      CASE_DEF(UNPACK, unpack)
+      CASE_DEF(PACK, pack)
+      CASE_DEF(SPLIT, split)
+      CASE_DEF(JOIN, join)
+      CASE_DEF(LIST, list)
+      CASE_DEF(LSLICE, lslice)
+      CASE_DEF(ANONLIST, anonlist)
+      CASE_DEF(ANONHASH, anonhash)
+      CASE_DEF(SPLICE, splice)
+      CASE_DEF(PUSH, push)
+      CASE_DEF(POP, pop)
+      CASE_DEF(SHIFT, shift)
+      CASE_DEF(UNSHIFT, unshift)
+      CASE_DEF(SORT, sort)
+      CASE_DEF(REVERSE, reverse)
+      CASE_EMPTY(MAPSTART)
+      CASE_DEF(GREPSTART, grepstart)
+      CASE_DEF(GREPWHILE, grepwhile)
+      CASE_DEF(MAPWHILE, mapwhile)
+      CASE_DEF(RANGE, range)
+      CASE_DEF(FLIP, flip)
+      CASE_DEF(FLOP, flop)
+      CASE_DEF(XOR, xor)
+      CASE_DEF(ANDASSIGN, andassign)
+      CASE_DEF(ORASSIGN, orassign)
+      CASE_DEF(METHOD, method)
+      CASE_DEF(ENTERSUB, entersub)
+      CASE_DEF(LEAVESUB, leavesub)
+      CASE_DEF(LEAVESUBLV, leavesublv)
+      CASE_DEF(CALLER, caller)
+      CASE_DEF(WARN, warn)
+      CASE_DEF(DIE, die)
+      CASE_DEF(RESET, reset)
+      CASE_DEF(DBSTATE, dbstate)
+      CASE_DEF(ENTER, enter)
+      CASE_DEF(LEAVE, leave)
+      CASE_DEF(ENTERITER, enteriter)
+      CASE_DEF(ITER, iter)
+      CASE_DEF(ENTERLOOP, enterloop)
+      CASE_DEF(LEAVELOOP, leaveloop)
+      CASE_DEF(RETURN, return)
+      CASE_DEF(LAST, last)
+      CASE_DEF(NEXT, next)
+      CASE_DEF(REDO, redo)
+      CASE_DEF(DUMP, dump)
+      CASE_DEF(GOTO, goto)
+      CASE_DEF(EXIT, exit)
+      CASE_DEF(OPEN, open)
+      CASE_DEF(CLOSE, close)
+      CASE_DEF(PIPE_OP, pipe_op)
+      CASE_DEF(FILENO, fileno)
+      CASE_DEF(UMASK, umask)
+      CASE_DEF(BINMODE, binmode)
+      CASE_DEF(TIE, tie)
+      CASE_DEF(UNTIE, untie)
+      CASE_DEF(TIED, tied)
+      CASE_DEF(DBMOPEN, dbmopen)
+      CASE_DEF(DBMCLOSE, dbmclose)
+      CASE_DEF(SSELECT, sselect)
+      CASE_DEF(SELECT, select)
+      CASE_DEF(GETC, getc)
+      CASE_DEF(READ, read)
+      CASE_DEF(ENTERWRITE, enterwrite)
+      CASE_DEF(LEAVEWRITE, leavewrite)
+      CASE_DEF(PRTF, prtf)
+      CASE_DEF(PRINT, print)
 #if PERL_VERSION >= 10
-	    case OP_SAY:
+      CASE_DEF(SAY, print)
 #endif
-		PL_op = Perl_pp_print(aTHX); break;
-	    case OP_SYSOPEN:
-		PL_op = Perl_pp_sysopen(aTHX); break;
-	    case OP_SYSSEEK:
-		PL_op = Perl_pp_sysseek(aTHX); break;
-	    case OP_SYSREAD:
-		PL_op = Perl_pp_sysread(aTHX); break;
-	    case OP_SYSWRITE:
-		PL_op = Perl_pp_syswrite(aTHX); break;
-	    case OP_SEND:
-		PL_op = Perl_pp_send(aTHX); break;
-	    case OP_RECV:
-		PL_op = Perl_pp_recv(aTHX); break;
-	    case OP_EOF:
-		PL_op = Perl_pp_eof(aTHX); break;
-	    case OP_TELL:
-		PL_op = Perl_pp_tell(aTHX); break;
-	    case OP_SEEK:
-		PL_op = Perl_pp_seek(aTHX); break;
-	    case OP_TRUNCATE:
-		PL_op = Perl_pp_truncate(aTHX); break;
-	    case OP_FCNTL:
-		PL_op = Perl_pp_fcntl(aTHX); break;
-	    case OP_IOCTL:
-		PL_op = Perl_pp_ioctl(aTHX); break;
-	    case OP_FLOCK:
-		PL_op = Perl_pp_flock(aTHX); break;
-	    case OP_SOCKET:
-		PL_op = Perl_pp_socket(aTHX); break;
-	    case OP_SOCKPAIR:
-		PL_op = Perl_pp_sockpair(aTHX); break;
-	    case OP_BIND:
-		PL_op = Perl_pp_bind(aTHX); break;
-	    case OP_CONNECT:
-		PL_op = Perl_pp_connect(aTHX); break;
-	    case OP_LISTEN:
-		PL_op = Perl_pp_listen(aTHX); break;
-	    case OP_ACCEPT:
-		PL_op = Perl_pp_accept(aTHX); break;
-	    case OP_SHUTDOWN:
-		PL_op = Perl_pp_shutdown(aTHX); break;
-	    case OP_GSOCKOPT:
-		PL_op = Perl_pp_gsockopt(aTHX); break;
-	    case OP_SSOCKOPT:
-		PL_op = Perl_pp_ssockopt(aTHX); break;
-	    case OP_GETSOCKNAME:
-		PL_op = Perl_pp_getsockname(aTHX); break;
-	    case OP_GETPEERNAME:
-		PL_op = Perl_pp_getpeername(aTHX); break;
-	    case OP_LSTAT:
-		PL_op = Perl_pp_lstat(aTHX); break;
-	    case OP_STAT:
-		PL_op = Perl_pp_stat(aTHX); break;
-	    case OP_FTRREAD:
-		PL_op = Perl_pp_ftrread(aTHX); break;
-	    case OP_FTRWRITE:
-		PL_op = Perl_pp_ftrwrite(aTHX); break;
-	    case OP_FTREXEC:
-		PL_op = Perl_pp_ftrexec(aTHX); break;
-	    case OP_FTEREAD:
-		PL_op = Perl_pp_fteread(aTHX); break;
-	    case OP_FTEWRITE:
-		PL_op = Perl_pp_ftewrite(aTHX); break;
-	    case OP_FTEEXEC:
-		PL_op = Perl_pp_fteexec(aTHX); break;
-	    case OP_FTIS:
-		PL_op = Perl_pp_ftis(aTHX); break;
-	    case OP_FTEOWNED:
-		PL_op = Perl_pp_fteowned(aTHX); break;
-	    case OP_FTROWNED:
-		PL_op = Perl_pp_ftrowned(aTHX); break;
-	    case OP_FTZERO:
-		PL_op = Perl_pp_ftzero(aTHX); break;
-	    case OP_FTSIZE:
-		PL_op = Perl_pp_ftsize(aTHX); break;
-	    case OP_FTMTIME:
-		PL_op = Perl_pp_ftmtime(aTHX); break;
-	    case OP_FTATIME:
-		PL_op = Perl_pp_ftatime(aTHX); break;
-	    case OP_FTCTIME:
-		PL_op = Perl_pp_ftctime(aTHX); break;
-	    case OP_FTSOCK:
-		PL_op = Perl_pp_ftsock(aTHX); break;
-	    case OP_FTCHR:
-		PL_op = Perl_pp_ftchr(aTHX); break;
-	    case OP_FTBLK:
-		PL_op = Perl_pp_ftblk(aTHX); break;
-	    case OP_FTFILE:
-		PL_op = Perl_pp_ftfile(aTHX); break;
-	    case OP_FTDIR:
-		PL_op = Perl_pp_ftdir(aTHX); break;
-	    case OP_FTPIPE:
-		PL_op = Perl_pp_ftpipe(aTHX); break;
-	    case OP_FTLINK:
-		PL_op = Perl_pp_ftlink(aTHX); break;
-	    case OP_FTSUID:
-		PL_op = Perl_pp_ftsuid(aTHX); break;
-	    case OP_FTSGID:
-		PL_op = Perl_pp_ftsgid(aTHX); break;
-	    case OP_FTSVTX:
-		PL_op = Perl_pp_ftsvtx(aTHX); break;
-	    case OP_FTTTY:
-		PL_op = Perl_pp_fttty(aTHX); break;
-	    case OP_FTTEXT:
-		PL_op = Perl_pp_fttext(aTHX); break;
-	    case OP_FTBINARY:
-		PL_op = Perl_pp_ftbinary(aTHX); break;
-	    case OP_CHDIR:
-		PL_op = Perl_pp_chdir(aTHX); break;
-	    case OP_CHOWN:
-		PL_op = Perl_pp_chown(aTHX); break;
-	    case OP_CHROOT:
-		PL_op = Perl_pp_chroot(aTHX); break;
-	    case OP_UNLINK:
-		PL_op = Perl_pp_unlink(aTHX); break;
-	    case OP_CHMOD:
-		PL_op = Perl_pp_chmod(aTHX); break;
-	    case OP_UTIME:
-		PL_op = Perl_pp_utime(aTHX); break;
-	    case OP_RENAME:
-		PL_op = Perl_pp_rename(aTHX); break;
-	    case OP_LINK:
-		PL_op = Perl_pp_link(aTHX); break;
-	    case OP_SYMLINK:
-		PL_op = Perl_pp_symlink(aTHX); break;
-	    case OP_READLINK:
-		PL_op = Perl_pp_readlink(aTHX); break;
-	    case OP_MKDIR:
-		PL_op = Perl_pp_mkdir(aTHX); break;
-	    case OP_RMDIR:
-		PL_op = Perl_pp_rmdir(aTHX); break;
-	    case OP_OPEN_DIR:
-		PL_op = Perl_pp_open_dir(aTHX); break;
-	    case OP_READDIR:
-		PL_op = Perl_pp_readdir(aTHX); break;
-	    case OP_TELLDIR:
-		PL_op = Perl_pp_telldir(aTHX); break;
-	    case OP_SEEKDIR:
-		PL_op = Perl_pp_seekdir(aTHX); break;
-	    case OP_REWINDDIR:
-		PL_op = Perl_pp_rewinddir(aTHX); break;
-	    case OP_CLOSEDIR:
-		PL_op = Perl_pp_closedir(aTHX); break;
-	    case OP_FORK:
-		PL_op = Perl_pp_fork(aTHX); break;
-	    case OP_WAIT:
-		PL_op = Perl_pp_wait(aTHX); break;
-	    case OP_WAITPID:
-		PL_op = Perl_pp_waitpid(aTHX); break;
-	    case OP_SYSTEM:
-		PL_op = Perl_pp_system(aTHX); break;
-	    case OP_EXEC:
-		PL_op = Perl_pp_exec(aTHX); break;
-	    case OP_KILL:
-		PL_op = Perl_pp_kill(aTHX); break;
-	    case OP_GETPPID:
-		PL_op = Perl_pp_getppid(aTHX); break;
-	    case OP_GETPGRP:
-		PL_op = Perl_pp_getpgrp(aTHX); break;
-	    case OP_SETPGRP:
-		PL_op = Perl_pp_setpgrp(aTHX); break;
-	    case OP_GETPRIORITY:
-		PL_op = Perl_pp_getpriority(aTHX); break;
-	    case OP_SETPRIORITY:
-		PL_op = Perl_pp_setpriority(aTHX); break;
-	    case OP_TIME:
-		PL_op = Perl_pp_time(aTHX); break;
-	    case OP_TMS:
-		PL_op = Perl_pp_tms(aTHX); break;
-	    case OP_LOCALTIME:
-		PL_op = Perl_pp_localtime(aTHX); break;
-	    case OP_GMTIME:
-		PL_op = Perl_pp_gmtime(aTHX); break;
-	    case OP_ALARM:
-		PL_op = Perl_pp_alarm(aTHX); break;
-	    case OP_SLEEP:
-		PL_op = Perl_pp_sleep(aTHX); break;
-	    case OP_SHMGET:
-		PL_op = Perl_pp_shmget(aTHX); break;
-	    case OP_SHMCTL:
-		PL_op = Perl_pp_shmctl(aTHX); break;
-	    case OP_SHMREAD:
-		PL_op = Perl_pp_shmread(aTHX); break;
-	    case OP_SHMWRITE:
-		PL_op = Perl_pp_shmwrite(aTHX); break;
-	    case OP_MSGGET:
-		PL_op = Perl_pp_msgget(aTHX); break;
-	    case OP_MSGCTL:
-		PL_op = Perl_pp_msgctl(aTHX); break;
-	    case OP_MSGSND:
-		PL_op = Perl_pp_msgsnd(aTHX); break;
-	    case OP_MSGRCV:
-		PL_op = Perl_pp_msgrcv(aTHX); break;
-	    case OP_SEMGET:
-		PL_op = Perl_pp_semget(aTHX); break;
-	    case OP_SEMCTL:
-		PL_op = Perl_pp_semctl(aTHX); break;
-	    case OP_SEMOP:
-		PL_op = Perl_pp_semop(aTHX); break;
-	    case OP_REQUIRE:
-	    case OP_DOFILE:
-		PL_op = Perl_pp_require(aTHX); break;
-	    case OP_ENTEREVAL:
-		PL_op = Perl_pp_entereval(aTHX); break;
-	    case OP_LEAVEEVAL:
-		PL_op = Perl_pp_leaveeval(aTHX); break;
-	    case OP_ENTERTRY:
-		PL_op = Perl_pp_entertry(aTHX); break;
-	    case OP_LEAVETRY:
-		PL_op = Perl_pp_leavetry(aTHX); break;
-	    case OP_GHBYNAME:
-		PL_op = Perl_pp_ghbyname(aTHX); break;
-	    case OP_GHBYADDR:
-		PL_op = Perl_pp_ghbyaddr(aTHX); break;
-	    case OP_GHOSTENT:
-		PL_op = Perl_pp_ghostent(aTHX); break;
-	    case OP_GNBYNAME:
-		PL_op = Perl_pp_gnbyname(aTHX); break;
-	    case OP_GNBYADDR:
-		PL_op = Perl_pp_gnbyaddr(aTHX); break;
-	    case OP_GNETENT:
-		PL_op = Perl_pp_gnetent(aTHX); break;
-	    case OP_GPBYNAME:
-		PL_op = Perl_pp_gpbyname(aTHX); break;
-	    case OP_GPBYNUMBER:
-		PL_op = Perl_pp_gpbynumber(aTHX); break;
-	    case OP_GPROTOENT:
-		PL_op = Perl_pp_gprotoent(aTHX); break;
-	    case OP_GSBYNAME:
-		PL_op = Perl_pp_gsbyname(aTHX); break;
-	    case OP_GSBYPORT:
-		PL_op = Perl_pp_gsbyport(aTHX); break;
-	    case OP_GSERVENT:
-		PL_op = Perl_pp_gservent(aTHX); break;
-	    case OP_SHOSTENT:
-		PL_op = Perl_pp_shostent(aTHX); break;
-	    case OP_SNETENT:
-		PL_op = Perl_pp_snetent(aTHX); break;
-	    case OP_SPROTOENT:
-		PL_op = Perl_pp_sprotoent(aTHX); break;
-	    case OP_SSERVENT:
-		PL_op = Perl_pp_sservent(aTHX); break;
-	    case OP_ENETENT:
+      CASE_DEF(SYSOPEN, sysopen)
+      CASE_DEF(SYSSEEK, sysseek)
+      CASE_DEF(SYSREAD, sysread)
+      CASE_DEF(SYSWRITE, syswrite)
+      CASE_DEF(SEND, send)
+      CASE_DEF(RECV, recv)
+      CASE_DEF(EOF, eof)
+      CASE_DEF(TELL, tell)
+      CASE_DEF(SEEK, seek)
+      CASE_DEF(TRUNCATE, truncate)
+      CASE_DEF(FCNTL, fcntl)
+      CASE_DEF(IOCTL, ioctl)
+      CASE_DEF(FLOCK, flock)
+      CASE_DEF(SOCKET, socket)
+      CASE_DEF(SOCKPAIR, sockpair)
+      CASE_DEF(BIND, bind)
+      CASE_DEF(CONNECT, connect)
+      CASE_DEF(LISTEN, listen)
+      CASE_DEF(ACCEPT, accept)
+      CASE_DEF(SHUTDOWN, shutdown)
+      CASE_DEF(GSOCKOPT, gsockopt)
+      CASE_DEF(SSOCKOPT, ssockopt)
+      CASE_DEF(GETSOCKNAME, getsockname)
+      CASE_DEF(GETPEERNAME, getpeername)
+      CASE_DEF(LSTAT, lstat)
+      CASE_DEF(STAT, stat)
+      CASE_DEF(FTRREAD, ftrread)
+      CASE_DEF(FTRWRITE, ftrwrite)
+      CASE_DEF(FTREXEC, ftrexec)
+      CASE_DEF(FTEREAD, fteread)
+      CASE_DEF(FTEWRITE, ftewrite)
+      CASE_DEF(FTEEXEC, fteexec)
+      CASE_DEF(FTIS, ftis)
+      CASE_DEF(FTEOWNED, fteowned)
+      CASE_DEF(FTROWNED, ftrowned)
+      CASE_DEF(FTZERO, ftzero)
+      CASE_DEF(FTSIZE, ftsize)
+      CASE_DEF(FTMTIME, ftmtime)
+      CASE_DEF(FTATIME, ftatime)
+      CASE_DEF(FTCTIME, ftctime)
+      CASE_DEF(FTSOCK, ftsock)
+      CASE_DEF(FTCHR, ftchr)
+      CASE_DEF(FTBLK, ftblk)
+      CASE_DEF(FTFILE, ftfile)
+      CASE_DEF(FTDIR, ftdir)
+      CASE_DEF(FTPIPE, ftpipe)
+      CASE_DEF(FTLINK, ftlink)
+      CASE_DEF(FTSUID, ftsuid)
+      CASE_DEF(FTSGID, ftsgid)
+      CASE_DEF(FTSVTX, ftsvtx)
+      CASE_DEF(FTTTY, fttty)
+      CASE_DEF(FTTEXT, fttext)
+      CASE_DEF(FTBINARY, ftbinary)
+      CASE_DEF(CHDIR, chdir)
+      CASE_DEF(CHOWN, chown)
+      CASE_DEF(CHROOT, chroot)
+      CASE_DEF(UNLINK, unlink)
+      CASE_DEF(CHMOD, chmod)
+      CASE_DEF(UTIME, utime)
+      CASE_DEF(RENAME, rename)
+      CASE_DEF(LINK, link)
+      CASE_DEF(SYMLINK, symlink)
+      CASE_DEF(READLINK, readlink)
+      CASE_DEF(MKDIR, mkdir)
+      CASE_DEF(RMDIR, rmdir)
+      CASE_DEF(OPEN_DIR, open_dir)
+      CASE_DEF(READDIR, readdir)
+      CASE_DEF(TELLDIR, telldir)
+      CASE_DEF(SEEKDIR, seekdir)
+      CASE_DEF(REWINDDIR, rewinddir)
+      CASE_DEF(CLOSEDIR, closedir)
+      CASE_DEF(FORK, fork)
+      CASE_DEF(WAIT, wait)
+      CASE_DEF(WAITPID, waitpid)
+      CASE_DEF(SYSTEM, system)
+      CASE_DEF(EXEC, exec)
+      CASE_DEF(KILL, kill)
+      CASE_DEF(GETPPID, getppid)
+      CASE_DEF(GETPGRP, getpgrp)
+      CASE_DEF(SETPGRP, setpgrp)
+      CASE_DEF(GETPRIORITY, getpriority)
+      CASE_DEF(SETPRIORITY, setpriority)
+      CASE_DEF(TIME, time)
+      CASE_DEF(TMS, tms)
+      CASE_DEF(LOCALTIME, localtime)
+      CASE_DEF(GMTIME, gmtime)
+      CASE_DEF(ALARM, alarm)
+      CASE_DEF(SLEEP, sleep)
+      CASE_DEF(SHMGET, shmget)
+      CASE_DEF(SHMCTL, shmctl)
+      CASE_DEF(SHMREAD, shmread)
+      CASE_DEF(SHMWRITE, shmwrite)
+      CASE_DEF(MSGGET, msgget)
+      CASE_DEF(MSGCTL, msgctl)
+      CASE_DEF(MSGSND, msgsnd)
+      CASE_DEF(MSGRCV, msgrcv)
+      CASE_DEF(SEMGET, semget)
+      CASE_DEF(SEMCTL, semctl)
+      CASE_DEF(SEMOP, semop)
+      CASE_EMPTY(REQUIRE)
+      CASE_DEF(DOFILE, require)
+      CASE_DEF(ENTEREVAL, entereval)
+      CASE_DEF(LEAVEEVAL, leaveeval)
+      CASE_DEF(ENTERTRY, entertry)
+      CASE_DEF(LEAVETRY, leavetry)
+      CASE_DEF(GHBYNAME, ghbyname)
+      CASE_DEF(GHBYADDR, ghbyaddr)
+      CASE_DEF(GHOSTENT, ghostent)
+      CASE_DEF(GNBYNAME, gnbyname)
+      CASE_DEF(GNBYADDR, gnbyaddr)
+      CASE_DEF(GNETENT, gnetent)
+      CASE_DEF(GPBYNAME, gpbyname)
+      CASE_DEF(GPBYNUMBER, gpbynumber)
+      CASE_DEF(GPROTOENT, gprotoent)
+      CASE_DEF(GSBYNAME, gsbyname)
+      CASE_DEF(GSBYPORT, gsbyport)
+      CASE_DEF(GSERVENT, gservent)
+      CASE_DEF(SHOSTENT, shostent)
+      CASE_DEF(SNETENT, snetent)
+      CASE_DEF(SPROTOENT, sprotoent)
+      CASE_DEF(SSERVENT, sservent)
+      CASE_EMPTY(ENETENT)
+      /* fall thru to ehostent */
 #if PERL_VERSION < 15
-		PL_op = Perl_pp_enetent(aTHX); break;
+      PL_op = Perl_pp_enetent(aTHX); break;
 #endif
-	    case OP_EPROTOENT:
+      CASE_EMPTY(EPROTOENT)
 #if PERL_VERSION < 15
-		PL_op = Perl_pp_eprotoent(aTHX); break;
+        PL_op = Perl_pp_eprotoent(aTHX); break;
 #endif
-	    case OP_ESERVENT:
+      CASE_EMPTY(ESERVENT)
 #if PERL_VERSION < 15
-		PL_op = Perl_pp_eservent(aTHX); break;
+        PL_op = Perl_pp_eservent(aTHX); break;
 #endif
-	    case OP_SPWENT:
+      CASE_EMPTY(SPWENT)
 #if PERL_VERSION < 15
-		PL_op = Perl_pp_spwent(aTHX); break;
+        PL_op = Perl_pp_spwent(aTHX); break;
 #endif
-	    case OP_EPWENT:
+      CASE_EMPTY(EPWENT)
 #if PERL_VERSION < 15
-		PL_op = Perl_pp_epwent(aTHX); break;
+        PL_op = Perl_pp_epwent(aTHX); break;
 #endif
-	    case OP_EGRENT:
+      CASE_EMPTY(EGRENT)
 #if PERL_VERSION < 15
-		PL_op = Perl_pp_egrent(aTHX); break;
+        PL_op = Perl_pp_egrent(aTHX); break;
 #endif
-	    case OP_SGRENT:
+      CASE_EMPTY(SGRENT)
 #if PERL_VERSION < 15
-		PL_op = Perl_pp_sgrent(aTHX); break;
+        PL_op = Perl_pp_sgrent(aTHX); break;
 #endif
-	    case OP_EHOSTENT:
-		PL_op = Perl_pp_ehostent(aTHX); break;
-	    case OP_GPWUID:
+      CASE_DEF(EHOSTENT, ehostent)
+      CASE_EMPTY(GPWUID)
+        /* fall thru to gpwent */
 #if PERL_VERSION < 9
-		PL_op = Perl_pp_gpwuid(aTHX); break;
+        PL_op = Perl_pp_gpwuid(aTHX); break;
 #endif
-	    case OP_GPWNAM:
+      CASE_EMPTY(GPWNAM)
 #if PERL_VERSION < 9
-		PL_op = Perl_pp_gpwnam(aTHX); break;
+        PL_op = Perl_pp_gpwnam(aTHX); break;
 #endif
-	    case OP_GPWENT:
-		PL_op = Perl_pp_gpwent(aTHX); break;
-	    case OP_GGRNAM:
+      CASE_DEF(GPWENT, gpwent)
+      CASE_EMPTY(GGRNAM)
+        /* fall thru to ggrent */
 #if PERL_VERSION < 9
-		PL_op = Perl_pp_ggrnam(aTHX); break;
+        PL_op = Perl_pp_ggrnam(aTHX); break;
 #endif
-	    case OP_GGRENT:
-		PL_op = Perl_pp_ggrent(aTHX); break;
-	    case OP_GGRGID:
-		PL_op = Perl_pp_ggrgid(aTHX); break;
-	    case OP_GETLOGIN:
-		PL_op = Perl_pp_getlogin(aTHX); break;
-	    case OP_SYSCALL:
-		PL_op = Perl_pp_syscall(aTHX); break;
-	    case OP_LOCK:
-		PL_op = Perl_pp_lock(aTHX); break;
+      CASE_DEF(GGRENT, ggrent)
+      CASE_DEF(GGRGID, ggrgid)
+      CASE_DEF(GETLOGIN, getlogin)
+      CASE_DEF(SYSCALL, syscall)
+      CASE_DEF(LOCK, lock)
 #if PERL_VERSION < 10
-	    case OP_THREADSV:
-		PL_op = Perl_pp_threadsv(aTHX); break;
+      CASE_DEF(THREADSV, threadsv)
 #endif
 #if PERL_VERSION < 11
-	    case OP_SETSTATE:
-		PL_curcop = (COP*)PL_op;
-		PL_op = NORMAL;
-		break;
+      CASE(SETSTATE, 
+           PL_curcop = (COP*)PL_op;
+           PL_op = NORMAL)
 #endif
-	    case OP_METHOD_NAMED:
-		PL_op = Perl_pp_method_named(aTHX); break;
+      CASE_DEF(METHOD_NAMED, method_named)
 #if PERL_VERSION >= 9
-	    case OP_DOR:
-		PL_op = Perl_pp_dor(aTHX); break;
-	    case OP_DORASSIGN:
-		PL_op = Perl_pp_dorassign(aTHX); break;
+      CASE_DEF(DOR, dor)
+      CASE_DEF(DORASSIGN, dorassign)
 #endif
 #if PERL_VERSION >= 10
-	    case OP_ENTERGIVEN:
-		PL_op = Perl_pp_entergiven(aTHX); break;
-	    case OP_LEAVEGIVEN:
-		PL_op = Perl_pp_leavegiven(aTHX); break;
-	    case OP_ENTERWHEN:
-		PL_op = Perl_pp_enterwhen(aTHX); break;
-	    case OP_LEAVEWHEN:
-		PL_op = Perl_pp_leavewhen(aTHX); break;
-	    case OP_BREAK:
-		PL_op = Perl_pp_break(aTHX); break;
-	    case OP_CONTINUE:
-		PL_op = Perl_pp_continue(aTHX); break;
-	    case OP_SMARTMATCH:
-		PL_op = Perl_pp_smartmatch(aTHX); break;
-	    case OP_ONCE:
-		PL_op = Perl_pp_once(aTHX); break;
+        CASE_DEF(ENTERGIVEN, entergiven)
+        CASE_DEF(LEAVEGIVEN, leavegiven)
+        CASE_DEF(ENTERWHEN, enterwhen)
+        CASE_DEF(LEAVEWHEN, leavewhen)
+        CASE_DEF(BREAK, break)
+        CASE_DEF(CONTINUE, continue)
+        CASE_DEF(SMARTMATCH, smartmatch)
+        CASE_DEF(ONCE, once)
 #endif
 #if PERL_VERSION >= 11
 # if PERL_VERSION < 18
-            case OP_BOOLKEYS:
-		PL_op = Perl_pp_boolkeys(aTHX); break;
+        CASE_DEF(BOOLKEYS, boolkeys)
 # endif
-	    case OP_HINTSEVAL:
-		PL_op = Perl_pp_hintseval(aTHX); break;
-	    case OP_AEACH:
-		PL_op = Perl_pp_aeach(aTHX); break;
-	    case OP_AKEYS:
-	    case OP_AVALUES:
-		PL_op = Perl_pp_akeys(aTHX); break;
+        CASE_DEF(HINTSEVAL, hintseval)
+        CASE_DEF(AEACH, aeach)
+        CASE_EMPTY(AKEYS)
+        CASE_DEF(AVALUES, akeys)
 #endif
 #if PERL_VERSION >= 13
-	    case OP_REACH:
-	    case OP_RKEYS:
-	    case OP_RVALUES:
-		PL_op = Perl_pp_rkeys(aTHX); break;
-	    case OP_TRANSR:
-		PL_op = Perl_pp_transr(aTHX); break;
+        CASE_EMPTY(REACH)
+        CASE_EMPTY(RKEYS)
+        CASE_DEF(RVALUES, rkeys)
+        CASE_DEF(TRANSR, transr)
 #endif
 #if PERL_VERSION >= 15
-	    case OP_COREARGS:
-		PL_op = Perl_pp_coreargs(aTHX); break;
-	    case OP_RUNCV:
-		PL_op = Perl_pp_runcv(aTHX); break;
-	    case OP_FC:
-		PL_op = Perl_pp_fc(aTHX); break;
+        CASE_DEF(COREARGS, coreargs)
+        CASE_DEF(RUNCV, runcv)
+        CASE_DEF(FC, fc)
 #endif
 #if PERL_VERSION >= 19
-            CASE_OP(PADRANGE, padrange);
+        CASE_DEF(PADRANGE, padrange)
 #endif
 #if PERL_VERSION >= 21
-            CASE_OP(MULTIDEREF, multideref);
-            CASE_OP(METHOD_SUPER, method_super);
-            CASE_OP(METHOD_REDIR, method_redir);
+        CASE_DEF(MULTIDEREF, multideref)
+        CASE_DEF(METHOD_SUPER, method_super)
+        CASE_DEF(METHOD_REDIR, method_redir)
 #endif
-	    case OP_CUSTOM:
 #if PERL_VERSION >= 13
-		PL_op = (*PL_op->op_ppaddr)(aTHX); break;
+	CASE(CUSTOM,
+             PL_op = (*PL_op->op_ppaddr)(aTHX))
 #else
-		PL_op = CALL_FPTR(PL_op->op_ppaddr)(aTHX); break;
+	CASE(CUSTOM,
+             PL_op = CALL_FPTR(PL_op->op_ppaddr)(aTHX))
 #endif
-	    default:
-		Perl_croak(aTHX_ "Invalid opcode '%s'\n", OP_NAME(PL_op));
-	}
-#if PERL_VERSION < 13
-        PERL_ASYNC_CHECK();
+#ifdef CGOTO
+#else
+	default:
 #endif
+             Perl_croak(aTHX_ "Invalid opcode '%s'\n", OP_NAME(PL_op));
+        SWITCH_END
     } while (PL_op);
 
     TAINT_NOT;

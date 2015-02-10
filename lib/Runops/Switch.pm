@@ -40,6 +40,11 @@ understandable, as direct threading beats switch dispatch usually.
     $ PERL5OPT_TEST=-MRunops::Switch ./TEST op/.t
     u=0.49 s=0.02 cu=16.39 cs=0.83 scripts=182 tests=47170 (dynamic_ext overhead)
 
+    $ time perl5.21.8-nt@db5cc9f9 -S prove `ls op/*.t  |egrep -v '(alarm|sigdis|fork|goto_xs|select|ppid|sleep)'`
+    real	0m19.601s
+    $ time PERL5OPT_TEST=-MRunops::Switch perl5.21.8-nt@db5cc9f9 -S prove `ls op/*.t  |egrep -v '(alarm|sigdis|fork|goto_xs|select|ppid|sleep)'`
+    real	0m19.619s
+
 =head1 TODO
 
 When the compiler understands the computed goto extension (gcc, clang,
